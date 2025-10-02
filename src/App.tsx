@@ -269,26 +269,46 @@ export default function PersonaCreativeSimulator() {
 
   const canAddPersona = personas.length < MAX_PERSONAS;
 
-  const handleGenerate = () => {
+  const handleGenerate = async () => {
     setLoading(true);
     setApiError(null);
-    // Simulate async operation and fallback logic
-    setTimeout(() => {
-      try {
-        // In a real app, you would 'await fetch(...)'.
-        // Here, we simulate failure to trigger the local generator.
-        throw new Error("Simulated API failure");
-      } catch (e) {
+    try {
+      const r = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ personas, base }),
+      });
+
+      if (!r.ok) throw new Error(`Server returned ${r.status}`);
+      const data = await r.json();
+
+      if (Array.isArray(data?.variants)) {
         const gen: Record<number, GeneratedVariant[]> = {};
-        personas.forEach((p, idx) => {
-          gen[idx] = generateForPersona(p, base);
+        personas.forEach((_, idx) => (gen[idx] = data.variants));
+        setResults(gen);
+      } else if (data?.raw) {
+        const gen: Record<number, GeneratedVariant[]> = {};
+        const DEFAULT_TONE: GeneratedVariant["tone"] = "formal/professional"; // pick any of your allowed tones
+        const text = String(data.raw);
+
+        personas.forEach((_, idx) => {
+          gen[idx] = [
+            { tone: DEFAULT_TONE, bodies: [text] }
+          ];
         });
         setResults(gen);
-        setApiError('API failed — showing deterministic local variants instead.');
-      } finally {
-        setLoading(false);
+      } else {
+        throw new Error("Unexpected response from /api/generate");
       }
-    }, 500);
+    } catch (err) {
+      // Local fallback
+      const gen: Record<number, GeneratedVariant[]> = {};
+      personas.forEach((p, idx) => (gen[idx] = generateForPersona(p, base)));
+      setResults(gen);
+      setApiError("Remote API failed; showing local variants instead.");
+    } finally {
+      setLoading(false);
+    }
   };
 
   const exportJson = () => {
