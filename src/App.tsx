@@ -315,6 +315,7 @@ export default function PersonaCreativeSimulator() {
           : "Remote API failed; showing local variants instead."
       );
     } finally {
+      clearTimeout(timeoutId); 
       setLoading(false);
     }
   };
