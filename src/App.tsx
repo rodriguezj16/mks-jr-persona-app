@@ -275,13 +275,14 @@ export default function PersonaCreativeSimulator() {
     
     // 20s client timeout
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 20_000);
+    const timeoutId = window.setTimeout(() => controller.abort(), 20_000);
 
     try {
       const r = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ personas, base }),
+        signal: controller.signal,
       });
 
       if (!r.ok) throw new Error(`Server returned ${r.status}`);
