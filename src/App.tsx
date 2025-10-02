@@ -272,6 +272,11 @@ export default function PersonaCreativeSimulator() {
   const handleGenerate = async () => {
     setLoading(true);
     setApiError(null);
+    
+    // 20s client timeout
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20_000);
+
     try {
       const r = await fetch("/api/generate", {
         method: "POST",
@@ -300,12 +305,15 @@ export default function PersonaCreativeSimulator() {
       } else {
         throw new Error("Unexpected response from /api/generate");
       }
-    } catch (err) {
-      // Local fallback
+    } catch (err: any) {
       const gen: Record<number, GeneratedVariant[]> = {};
       personas.forEach((p, idx) => (gen[idx] = generateForPersona(p, base)));
       setResults(gen);
-      setApiError("Remote API failed; showing local variants instead.");
+      setApiError(
+        err?.name === "AbortError"
+          ? "Request timed out; showing local variants."
+          : "Remote API failed; showing local variants instead."
+      );
     } finally {
       setLoading(false);
     }
