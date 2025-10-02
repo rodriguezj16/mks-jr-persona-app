@@ -6,5 +6,8 @@ export default async function handler(req: Request): Promise<Response> {
   if (req.method !== "POST") {
     return Response.json({ error: "Use POST" }, { status: 405 });
   }
-  return Response.json({ ok: true, hello: "generate works" }, { status: 200 });
+  const base = !!process.env.FUELIX_API_BASE;
+  const key  = !!process.env.FUELIX_API_KEY;
+  const model = process.env.FUELIX_MODEL ?? "(none)";
+  return Response.json({ ok: true, env: { base, key, model } }, { status: 200 });
 }
