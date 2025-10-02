@@ -1,26 +1,24 @@
-// api/generate.ts
-import type { VercelRequest, VercelResponse } from "@vercel/node";
-import OpenAI from "openai";
+// api/generate.ts — Fuel iX via OpenAI-compatible /v1/chat/completions
+export const runtime = "nodejs";
 
-const client = new OpenAI({
-  apiKey: process.env.FL_API_KEY, // set in Vercel → Project → Settings → Environment Variables
-});
+const FUELIX_API_BASE = process.env.FUELIX_API_BASE!;
+const FUELIX_API_KEY  = process.env.FUELIX_API_KEY!;
+const FUELIX_MODEL    = process.env.FUELIX_MODEL ?? "gpt-4o-mini"; // replace with your Fuel iX model if different
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== "POST") {
-    res.setHeader("Allow", "POST");
-    return res.status(405).json({ error: "Use POST" });
-  }
+function json(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
 
-  try {
-    const { personas, base } = req.body ?? {};
+export default async function handler(req: Request): Promise<Response> {
+  if (req.method !== "POST") return json({ error: "Use POST" }, 405);
+  if (!FUELIX_API_BASE || !FUELIX_API_KEY) return json({ error: "Server misconfigured" }, 500);
 
-    // Shape the model output to match your UI: {tone, subjects?, bodies}
-    const prompt = `
-You are a veteran marketing manager with a talent for personalized messaging copy. Given Personas and a Base Creative, produce for EACH tone
-["fun/energetic","humorous/cheeky","formal/professional"] exactly 3 message bodies.
-If channel is "email", also produce exactly 3 subject lines per tone.
-Return ONLY JSON matching:
+  const { personas, base } = await req.json();
+
+  const system = `You are a veteran marketing manager in charge of personalized messaging copy. Output ONLY JSON with this shape:
 {
   "variants": [
     { "tone": "fun/energetic", "subjects": ["...","...","..."], "bodies": ["...","...","..."] },
@@ -28,29 +26,47 @@ Return ONLY JSON matching:
     { "tone": "formal/professional", "subjects": ["...","...","..."], "bodies": ["...","...","..."] }
   ]
 }
+If channel != "email", omit "subjects". Keep each string concise.`;
 
-Personas: ${JSON.stringify(personas)}
-Base: ${JSON.stringify(base)}
-`.trim();
+  const user = `Personas: ${JSON.stringify(personas)}
+Base: ${JSON.stringify(base)}`;
 
-    const rsp = await client.responses.create({
-      model: "gpt-4o-mini",     // adjust as you like
-      input: prompt,
+  try {
+    const r = await fetch(`${FUELIX_API_BASE}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        "authorization": `Bearer ${FUELIX_API_KEY}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: FUELIX_MODEL,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+        temperature: 0.7,
+      }),
     });
 
-    // SDK convenience accessor for text
-    const text = rsp.output_text;
+    if (!r.ok) {
+      const detail = await r.text();
+      console.error("Fuel iX error", r.status, detail);
+      return json({ error: "Fuel iX call failed", detail }, 500);
+    }
 
-    // Try to parse JSON (strongly encouraged by the prompt)
+    // OpenAI-compatible response: { choices: [{ message: { content } }] }
+    const data = await r.json() as { choices?: { message?: { content?: string } }[] };
+    const text = data?.choices?.[0]?.message?.content ?? "";
+
     try {
       const parsed = JSON.parse(text);
-      return res.status(200).json(parsed);
+      return json(parsed, 200);
     } catch {
-      // Fallback: return text so the UI can still show something
-      return res.status(200).json({ raw: text });
+      // If provider returns plain text, still return it
+      return json({ raw: text }, 200);
     }
-  } catch (err: any) {
+  } catch (err) {
     console.error(err);
-    return res.status(500).json({ error: "LLM call failed" });
+    return json({ error: "Fuel iX call error" }, 500);
   }
 }
