@@ -7,7 +7,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 
 const FUELIX_API_BASE = process.env.FUELIX_API_BASE!;
 const FUELIX_API_KEY  = process.env.FUELIX_API_KEY!;
-const FUELIX_MODEL    = process.env.FUELIX_MODEL || 'gpt-4'; // optional override
+const FUELIX_MODEL    = process.env.FUELIX_MODEL || 'gpt-5'; // optional override
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   console.log('[generate] start', { method: req.method });
