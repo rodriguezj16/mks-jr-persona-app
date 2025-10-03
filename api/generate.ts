@@ -58,16 +58,38 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     for (let idx = 0; idx < personas.length; idx++) {
       const persona = personas[idx];
 
-      const system = `You are a veteran marketing manager genius. You create personalized messaging copy that is nuanced to individual customer personas.
-Return ONLY JSON, no prose, no markdown fences. Shape:
-{
-  "variants": [
-    { "tone": "fun/energetic", "subjects": ["...","...","..."], "bodies": ["...","...","..."] },
-    { "tone": "humorous/cheeky", "subjects": ["...","...","..."], "bodies": ["...","...","..."] },
-    { "tone": "formal/professional", "subjects": ["...","...","..."], "bodies": ["...","...","..."] }
-  ]
-}
-If channel != "email", omit "subjects". Keep strings concise. Tailor tightly to this persona.`;
+      const system = `
+      You are a senior lifecycle copywriter. You will receive:
+
+      - personas: Array<{ name: string; description: string }>
+      - base: { channel: "email" | "sms" | "inapp"; subject?: string; message: string; brief: string }
+
+      GOAL
+      - For each persona, produce copy that feels *distinctly* tailored to their motivations and objections.
+      - Do **not** reuse sentences or identical wording across personas.
+      - Address the reader in second person, but weave in persona-specific hooks drawn from the description.
+
+      DIFFERENTIATION RULES
+      - Value/Deal seekers: price-sensitivity, simplicity, quick wins, “save”, “unlock value”, short action steps.
+      - Premium/Status: exclusivity, seamlessness, perks, priority treatment, “effortless”, “concierge”.
+      - Family/Time-poor: time savings, predictability, reminders, kid/household coordination angles.
+      - Curious/Tech-forward: newness, power features, discovery, smart defaults, “under the hood”.
+
+      STYLE
+      - Keep each body 1–3 short sentences. Vary sentence structure *between personas*.
+      - If channel = "sms" or "inapp", keep each body under ~220 chars and omit subjects.
+
+      OUTPUT (strict JSON):
+      {
+        "byPersona": [
+          { "idx": number, "variants": [
+            { "tone": "fun/energetic", "subjects"?: string[], "bodies": string[] },
+            { "tone": "humorous/cheeky", "subjects"?: string[], "bodies": string[] },
+            { "tone": "formal/professional", "subjects"?: string[], "bodies": string[] }
+          ]}
+        ]
+      }
+      `.trim();
 
       const user = `Persona: ${JSON.stringify(persona)}
 Base: ${JSON.stringify(base)}`;
@@ -84,7 +106,10 @@ Base: ${JSON.stringify(base)}`;
             { role: "system", content: system },
             { role: "user", content: user },
           ],
-          temperature: 0.7,
+          temperature: 0.9,
+          top_p: 0.95,
+          presence_penalty: 0.6,
+          frequency_penalty: 0.3,
           stream: false,
         }),
         signal: controller.signal,
