@@ -351,9 +351,13 @@ export default function PersonaCreativeSimulator() {
     setLoading(true);
     setApiError(null);
 
-    // 20s client timeout
     const controller = new AbortController();
-    const timeoutId = window.setTimeout(() => controller.abort(), 20_000);
+    const timeoutId = window.setTimeout(() => controller.abort(), 15_000);
+
+    // small helpers
+    const isNonEmptyStrArr = (a: any) => Array.isArray(a) && a.some((s) => typeof s === "string" && s.trim().length > 0);
+    const looksLikeVariant = (v: any) =>
+      v && typeof v === "object" && typeof v.tone === "string" && isNonEmptyStrArr(v.bodies);
 
     try {
       const r = await fetch("/api/generate", {
@@ -365,60 +369,93 @@ export default function PersonaCreativeSimulator() {
 
       if (!r.ok) throw new Error(`Server returned ${r.status}`);
 
-      // ---- tolerant parse: prefer JSON, fall back to text and try JSON.parse ----
-      const ct = (r.headers.get("content-type") || "").toLowerCase();
-      let data: any;
+      // read as text first so we can handle both JSON and plain text
+      const text = await r.text();
+      let data: any = null;
       try {
-        if (ct.includes("application/json")) {
-          data = await r.json();
-        } else {
-          const text = await r.text();
-          try {
-            data = JSON.parse(text);
-          } catch {
-            data = { raw: text };
-          }
-        }
+        data = text ? JSON.parse(text) : null;
       } catch {
-        // If json() throws mid-stream, try text as a last resort
-        const text = await r.text().catch(() => "");
-        data = text ? { raw: text } : null;
+        // If the API returned plain text, show it for all personas as a single variant
+        data = { raw: text };
       }
-      // -------------------------------------------------------------------------
 
-      // Prefer persona-keyed shape
+      // Normalize into: Record<number, GeneratedVariant[]>
+      const normalized: Record<number, GeneratedVariant[]> = {};
+
+      // Case A: { byPersona: [{ idx, variants }] }
       if (Array.isArray(data?.byPersona)) {
-        const gen: Record<number, GeneratedVariant[]> = {};
-        (data.byPersona as Array<{ idx: number; variants: GeneratedVariant[] }>).forEach(
-          (p) => (gen[p.idx] = p.variants)
-        );
-        setResults(gen);
-        return;
-      }
-
-      // Back-compat: one variants array applied to each persona
-      if (Array.isArray(data?.variants)) {
-        const gen: Record<number, GeneratedVariant[]> = {};
-        personas.forEach((_, idx) => (gen[idx] = data.variants as GeneratedVariant[]));
-        setResults(gen);
-        return;
-      }
-
-      // Raw text fallback
-      if (data?.raw) {
-        const gen: Record<number, GeneratedVariant[]> = {};
-        const DEFAULT_TONE: GeneratedVariant["tone"] = "formal/professional";
-        const text = String(data.raw);
-        personas.forEach((_, idx) => {
-          gen[idx] = [{ tone: DEFAULT_TONE, bodies: [text] }];
+        data.byPersona.forEach((p: any) => {
+          const arr = Array.isArray(p?.variants) ? p.variants.filter(looksLikeVariant) : [];
+          normalized[p?.idx] = arr;
         });
-        setResults(gen);
-        return;
+      }
+      // Case B: { variants: [...] } – apply to every persona
+      else if (Array.isArray(data?.variants)) {
+        const arr = data.variants.filter(looksLikeVariant);
+        personas.forEach((_, idx) => (normalized[idx] = arr));
+      }
+      // Case C: { raw: "..." } – use same body for all
+      else if (typeof data?.raw === "string" && data.raw.trim().length > 0) {
+        const DEFAULT_TONE: GeneratedVariant["tone"] = "formal/professional";
+        personas.forEach((_, idx) => {
+          normalized[idx] = [{ tone: DEFAULT_TONE, bodies: [String(data.raw).trim()] }];
+        });
+      }
+      // Case D: OpenAI shape – { choices: [ { message: { content } } ] }
+      else if (Array.isArray(data?.choices) && data.choices[0]?.message?.content) {
+        const content = String(data.choices[0].message.content);
+        try {
+          // If content is JSON, parse and recurse into Case A/B
+          const inner = JSON.parse(content);
+          if (Array.isArray(inner?.byPersona)) {
+            inner.byPersona.forEach((p: any) => {
+              const arr = Array.isArray(p?.variants) ? p.variants.filter(looksLikeVariant) : [];
+              normalized[p?.idx] = arr;
+            });
+          } else if (Array.isArray(inner?.variants)) {
+            const arr = inner.variants.filter(looksLikeVariant);
+            personas.forEach((_, idx) => (normalized[idx] = arr));
+          } else {
+            // treat as raw text
+            const DEFAULT_TONE: GeneratedVariant["tone"] = "formal/professional";
+            personas.forEach((_, idx) => {
+              normalized[idx] = [{ tone: DEFAULT_TONE, bodies: [content] }];
+            });
+          }
+        } catch {
+          const DEFAULT_TONE: GeneratedVariant["tone"] = "formal/professional";
+          personas.forEach((_, idx) => {
+            normalized[idx] = [{ tone: DEFAULT_TONE, bodies: [content] }];
+          });
+        }
+      } else {
+        throw new Error("Unexpected response shape from /api/generate");
       }
 
-      throw new Error("Unexpected response from /api/generate");
+      // Validate & backfill per persona so the UI never renders blanks
+      let backfilled = false;
+      personas.forEach((p, idx) => {
+        const variants = normalized[idx];
+        const valid = Array.isArray(variants) && variants.length > 0 && variants.every(looksLikeVariant);
+
+        if (!valid) {
+          normalized[idx] = generateForPersona(p, base); // local deterministic fallback
+          backfilled = true;
+        } else {
+          // also strip empty bodies
+          normalized[idx] = variants.map((v) => ({
+            ...v,
+            bodies: v.bodies.filter((b) => typeof b === "string" && b.trim().length > 0),
+          })).filter((v) => v.bodies.length > 0) || generateForPersona(p, base);
+        }
+      });
+
+      setResults(normalized);
+      if (backfilled) {
+        setApiError("Remote API returned incomplete data for some personas; filled gaps with local variants.");
+      }
     } catch (err: any) {
-      // Local fallback
+      // Full fallback
       const gen: Record<number, GeneratedVariant[]> = {};
       personas.forEach((p, idx) => (gen[idx] = generateForPersona(p, base)));
       setResults(gen);
@@ -432,6 +469,7 @@ export default function PersonaCreativeSimulator() {
       setLoading(false);
     }
   };
+
 
   const exportJson = () => {
     const payload = {
