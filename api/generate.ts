@@ -5,7 +5,7 @@ export const maxDuration = 10; // keep under Hobby limits
 // ---- env ----
 const FUELIX_API_BASE = process.env.FUELIX_API_BASE!;
 const FUELIX_API_KEY  = process.env.FUELIX_API_KEY!;
-const FUELIX_MODEL    = process.env.FUELIX_MODEL ?? "gpt-4";
+const FUELIX_MODEL    = process.env.FUELIX_MODEL ?? "gpt-4o";
 
 // ---- minimal shared types (server-side only) ----
 type Channel = "email" | "sms" | "inapp";
@@ -39,7 +39,7 @@ export default async function handler(req: Request): Promise<Response> {
 
     const { personas, base } = body;
 
-    const system = `You are a veteran marketing manager genius. You create personalized messaging copy that is nuanced to individual customer personas. Output ONLY JSON with this shape:
+    const system = `You are a veteran marketing manager genius. You create personalized messaging copy that is nuanced to individual customer personas. nOutput ONLY JSON with this shape:
 {
   "variants": [
     { "tone": "fun/energetic", "subjects": ["...","...","..."], "bodies": ["...","...","..."] },
