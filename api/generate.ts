@@ -1,41 +1,45 @@
-// api/generate.ts
-import type { VercelRequest, VercelResponse } from '@vercel/node';
+// api/generate.ts — Fuel iX via OpenAI-compatible /v1/chat/completions (non-streaming)
+export const runtime = "nodejs";
+export const maxDuration = 10; // keep under Hobby limits
 
-// If you want to be explicit that this is Node.js (not edge), you can leave this line out;
-// Node is the default for /api files.
-// export const config = { runtime: 'nodejs' };
-
+// ---- env ----
 const FUELIX_API_BASE = process.env.FUELIX_API_BASE!;
 const FUELIX_API_KEY  = process.env.FUELIX_API_KEY!;
-const FUELIX_MODEL    = process.env.FUELIX_MODEL || 'gpt-4o'; // optional override
+const FUELIX_MODEL    = process.env.FUELIX_MODEL ?? "gpt-4";
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  console.log('[generate] start', { method: req.method });
+// ---- minimal shared types (server-side only) ----
+type Channel = "email" | "sms" | "inapp";
+interface Persona { name: string; description: string }
+interface BaseCreative { brief: string; channel: Channel; subject?: string; message: string }
 
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Use POST' });
-  }
-  if (!FUELIX_API_BASE || !FUELIX_API_KEY) {
-    console.error('[generate] missing env', {
-      FUELIX_API_BASE: !!FUELIX_API_BASE,
-      FUELIX_API_KEY: !!FUELIX_API_KEY,
-    });
-    return res.status(500).json({ error: 'Server misconfigured' });
-  }
+function json(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
 
-  // Vercel’s Node runtime parses JSON automatically for application/json
-  const { personas, base } = (req.body ?? {}) as {
-    personas?: Array<{ name: string; description: string }>;
-    base?: { channel?: string; subject?: string; message?: string; brief?: string };
-  };
+export default async function handler(req: Request): Promise<Response> {
+  if (req.method !== "POST") return json({ error: "Use POST" }, 405);
+  if (!FUELIX_API_BASE || !FUELIX_API_KEY) return json({ error: "Server misconfigured" }, 500);
 
-  // Minimal validation
-  if (!Array.isArray(personas) || !base) {
-    return res.status(400).json({ error: 'Invalid body: expected { personas: [], base: {} }' });
-  }
+  // Server-side timeout (must be < maxDuration)
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 9_000);
 
-  // Prepare prompt
-  const system = `You are a marketing copy assistant. Output ONLY JSON with this shape:
+  try {
+    // ---- parse & validate body ----
+    const body = (await req.json().catch(() => null)) as
+      | { personas?: Persona[]; base?: BaseCreative }
+      | null;
+
+    if (!body || !Array.isArray(body.personas) || !body.base) {
+      return json({ error: "Bad request: expected { personas: Persona[], base: BaseCreative }" }, 400);
+    }
+
+    const { personas, base } = body;
+
+    const system = `You are a veteran marketing manager genius. You create personalized messaging copy that is nuanced to individual customer personas. Output ONLY JSON with this shape:
 {
   "variants": [
     { "tone": "fun/energetic", "subjects": ["...","...","..."], "bodies": ["...","...","..."] },
@@ -43,30 +47,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     { "tone": "formal/professional", "subjects": ["...","...","..."], "bodies": ["...","...","..."] }
   ]
 }
-If channel != "email", omit the "subjects". Keep strings concise.`;
+If channel != "email", omit "subjects". Keep each string concise.
+Ensure copy reflects the persona’s description.`.trim();
 
-  const user = `Personas: ${JSON.stringify(personas)}
+    const user = `Personas: ${JSON.stringify(personas)}
 Base: ${JSON.stringify(base)}`;
 
-  // 9s upstream timeout so we never hit the platform’s hard limit
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 9000);
-
-  try {
     const r = await fetch(`${FUELIX_API_BASE}/v1/chat/completions`, {
-      method: 'POST',
+      method: "POST",
       headers: {
-        Authorization: `Bearer ${FUELIX_API_KEY}`,
-        'content-type': 'application/json',
+        authorization: `Bearer ${FUELIX_API_KEY}`,
+        "content-type": "application/json",
       },
       body: JSON.stringify({
         model: FUELIX_MODEL,
         messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: user },
+          { role: "system", content: system },
+          { role: "user", content: user },
         ],
-        temperature: 0.6,
-        stream: false, // force non-streaming
+        temperature: 0.7,
+        stream: false, // non-streaming so we can r.json()
       }),
       signal: controller.signal,
     });
@@ -74,42 +74,43 @@ Base: ${JSON.stringify(base)}`;
     clearTimeout(timeoutId);
 
     if (!r.ok) {
-      const detail = await r.text().catch(() => '');
-      console.error('[generate] Fuel iX error', r.status, detail.slice(0, 500));
-      return res.status(502).json({ error: 'Fuel iX call failed', status: r.status });
+      const detail = await r.text().catch(() => "");
+      console.error("Fuel iX error", r.status, detail.slice(0, 500));
+      return json({ error: "Fuel iX call failed", status: r.status }, 502);
     }
 
-    // Handle either JSON or text (in case the provider still streams-as-text)
-    const ct = r.headers.get('content-type') || '';
-    if (!ct.includes('application/json')) {
+    const ct = r.headers.get("content-type") || "";
+    // Some providers send text; try to parse; otherwise return {raw}
+    if (!ct.startsWith("application/json")) {
       const text = await r.text();
       try {
-        return res.status(200).json(JSON.parse(text));
+        return json(JSON.parse(text), 200);
       } catch {
-        return res.status(200).json({ raw: text });
+        return json({ raw: text }, 200);
       }
     }
 
-    // OpenAI-compatible response
+    // OpenAI-compatible JSON
     const data = (await r.json()) as {
-      choices?: Array<{ message?: { content?: string } }>;
+      choices?: { message?: { content?: string } }[];
     };
-    const content = data?.choices?.[0]?.message?.content ?? '';
 
-    // Try to parse model content as JSON with our expected shape
+    const content = data?.choices?.[0]?.message?.content ?? "";
     try {
+      // Prefer structured JSON from the model
       const parsed = JSON.parse(content);
-      return res.status(200).json(parsed);
+      return json(parsed, 200);
     } catch {
-      return res.status(200).json({ raw: content });
+      // Fallback: just pass through the raw text to the client
+      return json({ raw: content }, 200);
     }
   } catch (err: any) {
     clearTimeout(timeoutId);
-    if (err?.name === 'AbortError') {
-      console.warn('[generate] upstream timed out');
-      return res.status(504).json({ error: 'Upstream timeout' });
+    if (err?.name === "AbortError") {
+      console.warn("Fuel iX call timed out");
+      return json({ raw: "Timed out calling model — using local variants." }, 200);
     }
-    console.error('[generate] unexpected error', err);
-    return res.status(500).json({ error: 'server_error' });
+    console.error(err);
+    return json({ error: "Fuel iX call error" }, 500);
   }
 }
