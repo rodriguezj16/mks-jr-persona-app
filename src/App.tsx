@@ -22,9 +22,6 @@ const MAX_PERSONAS = 3 as const;
 const TONES = ["fun/energetic", "humorous/cheeky", "formal/professional"] as const;
 
 // --- Simple local "generator" for demo (no external API required) ---
-// This function approximates tone/persona tailoring deterministically.
-// In production, you can swap this with a server call to your LLM of choice.
-
 function titleCase(s: string) {
   return s
     .toLowerCase()
@@ -70,7 +67,6 @@ function injectTone(text: string, tone: typeof TONES[number], channel: Channel) 
       return channel === "email" ? `${spice} ${text}` : clamp(`${spice} ${text}`, 220);
     }
     case "formal/professional": {
-      // Strip emojis and tighten language slightly
       const t = text.replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}]/gu, "");
       return channel === "email" ? t : clamp(t, 220);
     }
@@ -78,43 +74,81 @@ function injectTone(text: string, tone: typeof TONES[number], channel: Channel) 
 }
 
 function personaNudge(text: string, persona: Persona) {
-  const key = persona.description.toLowerCase();
-  if (key.includes("value") || key.includes("budget")) {
-    return text.replace(/\b(save|deal|offer)\b/gi, (m) => m.toUpperCase());
+  const p = personaProfile(persona);
+
+  if (p.value) {
+    return text
+      .replace(/\b(benefit|value)\b/gi, "extra value")
+      .replace(/\b(faster|quick)\b/gi, "faster (and cheaper)")
+      .concat(" Save on every step.");
   }
-  if (key.includes("premium") || key.includes("frequent")) {
-    return text.replace(/\b(rewards|points|benefits)\b/gi, (m) => `exclusive ${m}`);
+  if (p.premium) {
+    return text
+      .replace(/\b(streamlined|simple)\b/gi, "effortless")
+      .replace(/\b(perk|benefit)\b/gi, "exclusive perk")
+      .concat(" Concierge-level ease.");
   }
-  if (key.includes("family") || key.includes("parent")) {
-    return text.replace(/\b(today|now)\b/gi, (m) => `${m} (fits your schedule)`);
+  if (p.family) {
+    return text
+      .replace(/\b(faster|quick)\b/gi, "faster, on your schedule")
+      .replace(/\b(remind|nudge)\b/gi, "keep you on track")
+      .concat(" Less juggling, more calm.");
+  }
+  if (p.curious) {
+    return text
+      .replace(/\b(new|update)\b/gi, "new build")
+      .replace(/\b(feature|perk)\b/gi, "power feature")
+      .concat(" Peek under the hood.");
   }
   return text;
 }
 
-function vary(subjectOrCopy: string, strategy: number, channel: Channel) {
+function vary(subjectOrCopy: string, strategy: number, channel: Channel, persona: Persona) {
   const base = subjectOrCopy.trim();
-  switch (strategy) {
-    case 1:
-      // Value-led
-      return channel === "email"
-        ? `Get more from every ${base.includes(" ") ? "step" : base}: unlock value`
-        : `Unlock more value today. ${base}`;
-    case 2:
-      // Curiosity/urgency
-      return channel === "email" ? `Don’t miss this: ${base}` : `Heads up: ${base}—ends soon`;
-    case 3:
-      // Social proof/benefit framing
-      return channel === "email"
-        ? `What top customers do: ${base}`
-        : `Join others doing this: ${base}`;
-    default:
-      return base;
-  }
+  const p = personaProfile(persona);
+
+  const valueSubs = [
+    `More for less: ${base}`,
+    `Unlock extra value now: ${base}`,
+    `Cut steps, save money: ${base}`,
+  ];
+  const premiumSubs = [
+    `Effortless access: ${base}`,
+    `Your VIP fast track: ${base}`,
+    `Welcome perk, no friction: ${base}`,
+  ];
+  const familySubs = [
+    `Faster, calmer starts: ${base}`,
+    `Set-and-go for busy days: ${base}`,
+    `One tap, less juggling: ${base}`,
+  ];
+  const curiousSubs = [
+    `New build unlocked: ${base}`,
+    `Smarter start: ${base}`,
+    `Explore the upgrade: ${base}`,
+  ];
+
+  const pool =
+    p.value ? valueSubs :
+    p.premium ? premiumSubs :
+    p.family ? familySubs :
+    curiousSubs;
+
+  if (channel === "email") return pool[(strategy - 1) % pool.length];
+
+  // SMS/In-App (headline fragments)
+  const alt =
+    p.value ? ["Save now", "Trim steps", "Unlock more"] :
+    p.premium ? ["Effortless entry", "Priority path", "Seamless start"] :
+    p.family ? ["Less juggling", "Right on time", "Easy start"] :
+    ["Smarter defaults", "New in this build", "Explore more"];
+
+  return `${alt[(strategy - 1) % alt.length]}. ${base}`;
 }
 
 function generateEmailSubject(subject: string, tone: typeof TONES[number], persona: Persona) {
   const base = subject || "Today’s update";
-  const candidates = [1, 2, 3].map((i) => vary(base, i, "email"));
+  const candidates = [1, 2, 3].map((i) => vary(base, i, "email", persona));
   return candidates.map((c) => injectTone(personaNudge(c, persona), tone, "email"));
 }
 
@@ -127,21 +161,37 @@ function summarizeBrief(brief: string) {
 function generateBodyCopy(message: string, brief: string, persona: Persona, tone: typeof TONES[number], channel: Channel) {
   const summary = summarizeBrief(brief);
   const base = message || "Here’s what’s new.";
-  const stances = [
-    // Strategy 1: Benefit-forward
-    `Benefit-first: ${base}${summary ? ` — ${summary}` : ""}`,
-    // Strategy 2: Objection handling
-    `Quick take: ${base} ${summary ? `(${summary})` : ""}. No hassle, all value.`,
-    // Strategy 3: Action-oriented
-    `Your move: ${base}${summary ? ` — ${summary}` : ""} Start in minutes.`,
+
+  const p = personaProfile(persona);
+  const valueBodies = [
+    `Benefit-first: ${base}${summary ? ` — ${summary}` : ""} Cut steps and keep more in your pocket.`,
+    `Quick take: ${base} ${summary ? `(${summary})` : ""}. Simple setup, real savings.`,
+    `Your move: ${base}${summary ? ` — ${summary}` : ""} Start in minutes and bank the value.`,
   ];
-  return stances.map((s) => injectTone(personaNudge(s, persona), tone, channel));
+  const premiumBodies = [
+    `Benefit-first: ${base}${summary ? ` — ${summary}` : ""} An effortless, concierge-level start.`,
+    `Quick take: ${base} ${summary ? `(${summary})` : ""}. Seamless onboarding, priority treatment.`,
+    `Your move: ${base}${summary ? ` — ${summary}` : ""} Enjoy exclusive perks right away.`,
+  ];
+  const familyBodies = [
+    `Benefit-first: ${base}${summary ? ` — ${summary}` : ""} Faster starts that fit your schedule.`,
+    `Quick take: ${base} ${summary ? `(${summary})` : ""}. Less juggling, clear next step.`,
+    `Your move: ${base}${summary ? ` — ${summary}` : ""} Set-and-go in minutes.`,
+  ];
+  const curiousBodies = [
+    `Benefit-first: ${base}${summary ? ` — ${summary}` : ""} Smarter defaults and a cleaner flow.`,
+    `Quick take: ${base} ${summary ? `(${summary})` : ""}. Power features, no clutter.`,
+    `Your move: ${base}${summary ? ` — ${summary}` : ""} Explore the upgrade in seconds.`,
+  ];
+
+  const pool = p.value ? valueBodies : p.premium ? premiumBodies : p.family ? familyBodies : curiousBodies;
+  return pool.map((s) => injectTone(personaNudge(s, persona), tone, channel));
 }
 
 type GeneratedVariant = {
   tone: typeof TONES[number];
-  subjects?: string[]; // for email only (3)
-  bodies: string[]; // three variations
+  subjects?: string[];
+  bodies: string[];
 };
 
 function generateForPersona(persona: Persona, base: BaseCreative): GeneratedVariant[] {
@@ -166,7 +216,13 @@ function Section({ title, children, subtitle }: { title: string; subtitle?: stri
   );
 }
 
-function PersonaEditor({ index, value, onChange, onRemove, canRemove }: {
+function PersonaEditor({
+  index,
+  value,
+  onChange,
+  onRemove,
+  canRemove,
+}: {
   index: number;
   value: Persona;
   onChange: (v: Persona) => void;
@@ -186,15 +242,35 @@ function PersonaEditor({ index, value, onChange, onRemove, canRemove }: {
       <CardContent className="space-y-3">
         <div className="space-y-1">
           <Label htmlFor={`persona-name-${index}`}>Name</Label>
-          <Input id={`persona-name-${index}`} placeholder="e.g., Value-Seeker Vanessa" value={value.name} onChange={(e: React.ChangeEvent<HTMLInputElement>) => onChange({ ...value, name: e.target.value })} />
+          <Input
+            id={`persona-name-${index}`}
+            placeholder="e.g., Value-Seeker Vanessa"
+            value={value.name}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => onChange({ ...value, name: e.target.value })}
+          />
         </div>
         <div className="space-y-1">
           <Label htmlFor={`persona-desc-${index}`}>Description</Label>
-          <Textarea id={`persona-desc-${index}`} placeholder="Who are they? Goals, pains, behaviors…" value={value.description} onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => onChange({ ...value, description: e.target.value })} />
+          <Textarea
+            id={`persona-desc-${index}`}
+            placeholder="Who are they? Goals, pains, behaviors…"
+            value={value.description}
+            onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => onChange({ ...value, description: e.target.value })}
+          />
         </div>
       </CardContent>
     </Card>
   );
+}
+
+function personaProfile(p: Persona) {
+  const d = (p.description + " " + p.name).toLowerCase();
+  return {
+    value: /value|deal|budget|save|frugal/.test(d),
+    premium: /premium|vip|status|luxury|convenience|frequent/.test(d),
+    family: /family|parent|kids|household|busy/.test(d),
+    curious: /tech|power|explore|curious|early adopter|discover/.test(d),
+  };
 }
 
 function PersonaPanel({ persona, variants }: { persona: Persona; variants: GeneratedVariant[] }) {
@@ -213,7 +289,9 @@ function PersonaPanel({ persona, variants }: { persona: Persona; variants: Gener
             <Button variant="outline" size="icon" onClick={() => setToneIndex((p) => (p - 1 + TONES.length) % TONES.length)} aria-label="Previous tone">
               <ChevronLeft className="w-4 h-4" />
             </Button>
-            <Badge variant="secondary" className="text-[11px] px-2 py-1">{TONES[toneIndex]}</Badge>
+            <Badge variant="secondary" className="text-[11px] px-2 py-1">
+              {TONES[toneIndex]}
+            </Badge>
             <Button variant="outline" size="icon" onClick={() => setToneIndex((p) => (p + 1) % TONES.length)} aria-label="Next tone">
               <ChevronRight className="w-4 h-4" />
             </Button>
@@ -221,7 +299,7 @@ function PersonaPanel({ persona, variants }: { persona: Persona; variants: Gener
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
-        {active.subjects ? (
+        {active?.subjects ? (
           <div className="space-y-2">
             <div className="text-sm font-semibold">Subject line variations</div>
             <ul className="list-disc pl-5 space-y-1 text-sm">
@@ -240,7 +318,7 @@ function PersonaPanel({ persona, variants }: { persona: Persona; variants: Gener
               <TabsTrigger value="1">Variation 2</TabsTrigger>
               <TabsTrigger value="2">Variation 3</TabsTrigger>
             </TabsList>
-            {active.bodies.map((b, i) => (
+            {active?.bodies.map((b, i) => (
               <TabsContent key={i} value={String(i)}>
                 <div className="rounded-2xl border p-4 text-sm leading-relaxed bg-muted/40 whitespace-pre-wrap">{b}</div>
               </TabsContent>
@@ -254,14 +332,14 @@ function PersonaPanel({ persona, variants }: { persona: Persona; variants: Gener
 
 export default function PersonaCreativeSimulator() {
   const [personas, setPersonas] = useState<Persona[]>([
-    { name: "Value‑Seeker Vanessa", description: "Budget‑conscious, hunts deals, responds to clear savings and simple steps." },
-    { name: "Premium Peter", description: "Frequent buyer, prioritizes convenience, status, and best‑in‑class experiences." },
+    { name: "Value-Seeker Vanessa", description: "Budget-conscious, hunts deals, responds to clear savings and simple steps." },
+    { name: "Premium Peter", description: "Frequent buyer, prioritizes convenience, status, and best-in-class experiences." },
   ]);
   const [base, setBase] = useState<BaseCreative>({
     brief: "Announce a new perk that makes onboarding faster and highlights immediate value.",
     channel: "email",
     subject: "Welcome perk: faster start, more value",
-    message: "We’ve streamlined your first steps so you get to benefits sooner."
+    message: "We’ve streamlined your first steps so you get to benefits sooner.",
   });
   const [results, setResults] = useState<Record<number, GeneratedVariant[]>>({});
   const [loading, setLoading] = useState(false);
@@ -272,7 +350,7 @@ export default function PersonaCreativeSimulator() {
   const handleGenerate = async () => {
     setLoading(true);
     setApiError(null);
-    
+
     // 20s client timeout
     const controller = new AbortController();
     const timeoutId = window.setTimeout(() => controller.abort(), 20_000);
@@ -286,27 +364,61 @@ export default function PersonaCreativeSimulator() {
       });
 
       if (!r.ok) throw new Error(`Server returned ${r.status}`);
-      const data = await r.json();
 
+      // ---- tolerant parse: prefer JSON, fall back to text and try JSON.parse ----
+      const ct = (r.headers.get("content-type") || "").toLowerCase();
+      let data: any;
+      try {
+        if (ct.includes("application/json")) {
+          data = await r.json();
+        } else {
+          const text = await r.text();
+          try {
+            data = JSON.parse(text);
+          } catch {
+            data = { raw: text };
+          }
+        }
+      } catch {
+        // If json() throws mid-stream, try text as a last resort
+        const text = await r.text().catch(() => "");
+        data = text ? { raw: text } : null;
+      }
+      // -------------------------------------------------------------------------
+
+      // Prefer persona-keyed shape
+      if (Array.isArray(data?.byPersona)) {
+        const gen: Record<number, GeneratedVariant[]> = {};
+        (data.byPersona as Array<{ idx: number; variants: GeneratedVariant[] }>).forEach(
+          (p) => (gen[p.idx] = p.variants)
+        );
+        setResults(gen);
+        return;
+      }
+
+      // Back-compat: one variants array applied to each persona
       if (Array.isArray(data?.variants)) {
         const gen: Record<number, GeneratedVariant[]> = {};
-        personas.forEach((_, idx) => (gen[idx] = data.variants));
+        personas.forEach((_, idx) => (gen[idx] = data.variants as GeneratedVariant[]));
         setResults(gen);
-      } else if (data?.raw) {
-        const gen: Record<number, GeneratedVariant[]> = {};
-        const DEFAULT_TONE: GeneratedVariant["tone"] = "formal/professional"; // pick any of your allowed tones
-        const text = String(data.raw);
+        return;
+      }
 
+      // Raw text fallback
+      if (data?.raw) {
+        const gen: Record<number, GeneratedVariant[]> = {};
+        const DEFAULT_TONE: GeneratedVariant["tone"] = "formal/professional";
+        const text = String(data.raw);
         personas.forEach((_, idx) => {
-          gen[idx] = [
-            { tone: DEFAULT_TONE, bodies: [text] }
-          ];
+          gen[idx] = [{ tone: DEFAULT_TONE, bodies: [text] }];
         });
         setResults(gen);
-      } else {
-        throw new Error("Unexpected response from /api/generate");
+        return;
       }
+
+      throw new Error("Unexpected response from /api/generate");
     } catch (err: any) {
+      // Local fallback
       const gen: Record<number, GeneratedVariant[]> = {};
       personas.forEach((p, idx) => (gen[idx] = generateForPersona(p, base)));
       setResults(gen);
@@ -316,7 +428,7 @@ export default function PersonaCreativeSimulator() {
           : "Remote API failed; showing local variants instead."
       );
     } finally {
-      clearTimeout(timeoutId); 
+      clearTimeout(timeoutId);
       setLoading(false);
     }
   };
@@ -325,9 +437,7 @@ export default function PersonaCreativeSimulator() {
     const payload = {
       personas,
       base,
-      generated: Object.fromEntries(
-        Object.entries(results).map(([k, v]) => [k, v])
-      ),
+      generated: Object.fromEntries(Object.entries(results).map(([k, v]) => [k, v])),
       meta: { createdAt: new Date().toISOString() },
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
@@ -339,11 +449,14 @@ export default function PersonaCreativeSimulator() {
     URL.revokeObjectURL(url);
   };
 
-  const channelDisplay = useMemo(() => ({
-    email: "Email",
-    sms: "SMS",
-    inapp: "In‑App",
-  }), []);
+  const channelDisplay = useMemo(
+    () => ({
+      email: "Email",
+      sms: "SMS",
+      inapp: "In-App",
+    }),
+    []
+  );
 
   return (
     <div className="mx-auto max-w-7xl p-6 space-y-8">
@@ -353,12 +466,14 @@ export default function PersonaCreativeSimulator() {
           {apiError}
         </div>
       )}
-      
+
       <div className="flex items-center gap-3">
         <Sparkles className="w-6 h-6" />
         <div>
           <h1 className="text-2xl font-bold tracking-tight">AI Persona Creative Simulator</h1>
-          <p className="text-sm text-muted-foreground">Generate persona‑tailored creative variations by tone across Email, SMS, or In‑App.</p>
+          <p className="text-sm text-muted-foreground">
+            Generate persona-tailored creative variations by tone across Email, SMS, or In-App.
+          </p>
           <div className="mt-2 h-1 w-40 bg-gradient-to-r from-fuchsia-400 via-amber-400 to-sky-400 rounded-full opacity-70" />
         </div>
       </div>
@@ -380,7 +495,12 @@ export default function PersonaCreativeSimulator() {
                 />
               ))}
               <div className="flex justify-end">
-                <Button variant="outline" size="sm" onClick={() => canAddPersona && setPersonas((arr) => [...arr, { name: "", description: "" }])} disabled={!canAddPersona}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => canAddPersona && setPersonas((arr) => [...arr, { name: "", description: "" }])}
+                  disabled={!canAddPersona}
+                >
                   <Plus className="w-4 h-4 mr-1" /> Add persona
                 </Button>
               </div>
@@ -395,7 +515,12 @@ export default function PersonaCreativeSimulator() {
               <CardContent className="space-y-4 p-4">
                 <div className="space-y-1">
                   <Label htmlFor="brief">Creative brief</Label>
-                  <Textarea id="brief" placeholder="What are we trying to achieve? Key benefit, audience, CTA, constraints…" value={base.brief} onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setBase((b) => ({ ...b, brief: e.target.value }))} />
+                  <Textarea
+                    id="brief"
+                    placeholder="What are we trying to achieve? Key benefit, audience, CTA, constraints…"
+                    value={base.brief}
+                    onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setBase((b) => ({ ...b, brief: e.target.value }))}
+                  />
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -408,7 +533,7 @@ export default function PersonaCreativeSimulator() {
                       <SelectContent>
                         <SelectItem value="email">Email</SelectItem>
                         <SelectItem value="sms">SMS</SelectItem>
-                        <SelectItem value="inapp">In‑App</SelectItem>
+                        <SelectItem value="inapp">In-App</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
@@ -416,14 +541,24 @@ export default function PersonaCreativeSimulator() {
                   {base.channel === "email" && (
                     <div className="md:col-span-2 space-y-1">
                       <Label htmlFor="subject">Original subject line</Label>
-                      <Input id="subject" placeholder="e.g., Welcome to faster rewards" value={base.subject} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setBase((b) => ({ ...b, subject: e.target.value }))} />
+                      <Input
+                        id="subject"
+                        placeholder="e.g., Welcome to faster rewards"
+                        value={base.subject}
+                        onChange={(e: React.ChangeEvent<HTMLInputElement>) => setBase((b) => ({ ...b, subject: e.target.value }))}
+                      />
                     </div>
                   )}
                 </div>
 
                 <div className="space-y-1">
                   <Label htmlFor="message">Original message ({titleCase(channelDisplay[base.channel])})</Label>
-                  <Textarea id="message" placeholder="Baseline copy to transform into variations" value={base.message} onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setBase((b) => ({ ...b, message: e.target.value }))} />
+                  <Textarea
+                    id="message"
+                    placeholder="Baseline copy to transform into variations"
+                    value={base.message}
+                    onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setBase((b) => ({ ...b, message: e.target.value }))}
+                  />
                 </div>
 
                 <div className="flex items-center gap-3 pt-2">
@@ -444,7 +579,9 @@ export default function PersonaCreativeSimulator() {
       <Section title="Results" subtitle="One panel per persona; cycle tones; three variations per tone">
         {Object.keys(results).length === 0 ? (
           <Card>
-            <CardContent className="p-6 text-sm text-muted-foreground">Fill in personas and base creative, then click <span className="font-medium">Generate variations</span>.</CardContent>
+            <CardContent className="p-6 text-sm text-muted-foreground">
+              Fill in personas and base creative, then click <span className="font-medium">Generate variations</span>.
+            </CardContent>
           </Card>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -461,13 +598,17 @@ export default function PersonaCreativeSimulator() {
           <div className="font-medium text-foreground">Implementation Notes</div>
           <ul className="list-disc pl-5 space-y-1">
             <li>
-              This demo uses a deterministic local generator to avoid external calls. Swap <code>handleGenerate()</code> with a server endpoint that calls your preferred LLM and passes <code>persona</code>, <code>brief</code>, <code>channel</code>, <code>subject</code>, and <code>message</code> as structured inputs.
+              This demo uses a deterministic local generator to avoid external calls. Swap <code>handleGenerate()</code> with a server
+              endpoint that calls your preferred LLM and passes <code>persona</code>, <code>brief</code>, <code>channel</code>,{" "}
+              <code>subject</code>, and <code>message</code> as structured inputs.
             </li>
             <li>
-              For email, three subject lines are produced; for SMS/In‑App, only message bodies are shown. The local generator also clamps SMS/In‑App length ~220 chars.
+              For email, three subject lines are produced; for SMS/In-App, only message bodies are shown. The local generator also clamps
+              SMS/In-App length ~220 chars.
             </li>
             <li>
-              Consider persisting sessions and team templates, then logging which variations are selected to build a feedback dataset for offline fine‑tuning.
+              Consider persisting sessions and team templates, then logging which variations are selected to build a feedback dataset for
+              offline fine-tuning.
             </li>
           </ul>
         </CardContent>
