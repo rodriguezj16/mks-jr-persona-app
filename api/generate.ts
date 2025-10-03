@@ -2,7 +2,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 
 export const runtime = "nodejs";
-export const maxDuration = 30;
+export const maxDuration = 40;
 
 // ---- env ----
 const FUELIX_API_BASE = process.env.FUELIX_API_BASE!;
@@ -49,7 +49,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   // 9s per request timeout (under Vercel hobby limit)
   const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), 20_000);
+  const t = setTimeout(() => controller.abort(), 40_000);
 
   try {
     // Generate per persona (keeps outputs distinct)
