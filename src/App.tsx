@@ -432,57 +432,121 @@ export default function PersonaCreativeSimulator() {
   const handleGenerate = async () => {
     setLoading(true);
     setApiError(null);
+    setResults({}); // clear previous
 
-    // fan-out one request per persona; per-request timeout & one retry
-    const resultsMap: Record<number, GeneratedVariant[]> = {};
-    const failedIdxs: number[] = [];
-
-    for (let idx = 0; idx < personas.length; idx++) {
-      const persona = personas[idx];
-      const body = JSON.stringify({ persona, base });
-
-      let final: GeneratedVariant[] | null = null;
-
-      for (let attempt = 0; attempt < 2 && !final; attempt++) {
-        try {
-          const r = await fetchWithTimeout("/api/generate-persona", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body,
-            timeoutMs: 18000, // per-call timeout (18s)
-          });
-
-          if (!r.ok) throw new Error(`HTTP ${r.status}`);
-
-          // API returns JSON; normalize
-          const data = await r.json();
-          final = toVariants(data);
-        } catch (_err) {
-          // brief jitter before the single retry
-          if (attempt === 0) await new Promise((res) => setTimeout(res, 250));
-        }
-      }
-
-      if (final) {
-        resultsMap[idx] = final;
-      } else {
-        failedIdxs.push(idx);
-      }
-    }
-
-    // stitch results; only fill the failed personas with local variants
-    if (failedIdxs.length > 0) {
-      failedIdxs.forEach((i) => {
-        resultsMap[i] = generateForPersona(personas[i], base);
+    // small helper so we don't repeat options everywhere
+    const postJson = (url: string, body: unknown, signal: AbortSignal) =>
+      fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal,
       });
-      setApiError(
-        "Remote API returned incomplete data for some personas; filled only those gaps with local variants."
-      );
+
+    // 25s per-persona client timeout (Vercel Hobby hard caps execution ~10s, but keep a cushion)
+    const perRequestMs = 25_000;
+
+    // simple concurrency limiter (2 at a time keeps things smooth on Hobby)
+    const MAX_CONCURRENCY = 2;
+    let inFlight = 0;
+    const queue: Array<() => Promise<void>> = [];
+
+    const runNext = () => {
+      const job = queue.shift();
+      if (job) job();
+    };
+
+    const schedule = <T,>(fn: () => Promise<T>): Promise<T> =>
+      new Promise<T>((resolve, reject) => {
+        const start = async () => {
+          inFlight++;
+          try {
+            const out = await fn();
+            resolve(out);
+          } catch (e) {
+            reject(e);
+          } finally {
+            inFlight--;
+            runNext();
+          }
+        };
+        if (inFlight < MAX_CONCURRENCY) start();
+        else queue.push(start);
+      });
+
+    // build per-persona requests
+    const jobs = personas.map((persona, idx) =>
+      schedule(async () => {
+        const ctl = new AbortController();
+        const t = window.setTimeout(() => ctl.abort(), perRequestMs);
+        try {
+          const r = await postJson("/api/generate-persona", { persona, base }, ctl.signal);
+
+          // Treat non-2xx as failure (no backfill)
+          if (!r.ok) {
+            const detail = await r.text().catch(() => "");
+            throw new Error(`p${idx} ${r.status} ${detail?.slice(0, 200)}`);
+          }
+
+          const data = await r.json();
+
+          // Expect the tight persona payload shape:
+          // { idx?: number, variants: GeneratedVariant[] }
+          const variants = Array.isArray(data?.variants) ? data.variants : null;
+          if (!variants || variants.length === 0) {
+            throw new Error(`p${idx} empty/invalid variants`);
+          }
+
+          // success: store under that persona index
+          setResults(prev => ({ ...prev, [idx]: variants }));
+          return true;
+        } finally {
+          clearTimeout(t);
+        }
+      })
+    );
+
+    // wait for all to settle
+    const settled = await Promise.allSettled(jobs);
+
+    const failures = settled.filter(s => s.status === "rejected").length;
+    const successes = settled.length - failures;
+
+    if (successes === 0) {
+      setApiError("Remote API returned no data. Nothing was back-filled.");
+    } else if (failures > 0) {
+      setApiError("Remote API returned incomplete data for some personas. Missing panels were not back-filled.");
+    } else {
+      setApiError(null);
     }
 
-    setResults(resultsMap);
     setLoading(false);
   };
+  What changes on screen
+  Panels that succeeded render as usual.
+
+  Panels that failed simply won’t have results (your PersonaPanel can already handle variants=[]; if you’d like a clearer empty state, add a small “No data” message when !variants?.length).
+
+  Optional: friendlier empty state in PersonaPanel
+  If you want an explicit message instead of an empty card, inside PersonaPanel before rendering subjects/bodies:
+
+  tsx
+  Copy code
+  if (!variants || variants.length === 0) {
+    return (
+      <Card className="h-full">
+        <CardHeader>
+          <CardTitle className="text-lg">{persona.name || "Untitled Persona"}</CardTitle>
+          <p className="text-xs text-muted-foreground mt-1 line-clamp-2">
+            {persona.description || "(no description)"}
+          </p>
+        </CardHeader>
+        <CardContent className="text-sm text-muted-foreground">
+          No remote data for this persona. Try again.
+        </CardContent>
+      </Card>
+    );
+  }
 
 
   const exportJson = () => {
