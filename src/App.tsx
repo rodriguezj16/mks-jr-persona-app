@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -273,62 +273,121 @@ function personaProfile(p: Persona) {
   };
 }
 
-function PersonaPanel({ persona, variants }: { persona: Persona; variants: GeneratedVariant[] }) {
+function PersonaPanel({
+  persona,
+  variants,
+}: {
+  persona: Persona;
+  variants: GeneratedVariant[];
+}) {
+  // Only the tones we actually have for this persona
+  const tones = (variants ?? []).map(v => v.tone);
   const [toneIndex, setToneIndex] = useState(0);
-  const active = variants[toneIndex];
+
+  // Keep index in range if new data arrives
+  useEffect(() => {
+    if (toneIndex >= tones.length) setToneIndex(0);
+  }, [tones.length, toneIndex]);
+
+  const hasData = tones.length > 0;
+  const active = hasData ? variants[toneIndex] : undefined;
 
   return (
     <Card className="h-full">
       <CardHeader>
         <div className="flex items-center justify-between">
           <div>
-            <CardTitle className="text-lg">{persona.name || "Untitled Persona"}</CardTitle>
-            <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{persona.description || "(no description)"}</p>
+            <CardTitle className="text-lg">
+              {persona.name || "Untitled Persona"}
+            </CardTitle>
+            <p className="text-xs text-muted-foreground mt-1 line-clamp-2">
+              {persona.description || "(no description)"}
+            </p>
           </div>
+
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="icon" onClick={() => setToneIndex((p) => (p - 1 + TONES.length) % TONES.length)} aria-label="Previous tone">
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={() =>
+                setToneIndex((p) => (p - 1 + tones.length) % tones.length)
+              }
+              aria-label="Previous tone"
+              disabled={!hasData || tones.length <= 1}
+            >
               <ChevronLeft className="w-4 h-4" />
             </Button>
+
             <Badge variant="secondary" className="text-[11px] px-2 py-1">
-              {TONES[toneIndex]}
+              {hasData ? active?.tone : "no results"}
             </Badge>
-            <Button variant="outline" size="icon" onClick={() => setToneIndex((p) => (p + 1) % TONES.length)} aria-label="Next tone">
+
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={() => setToneIndex((p) => (p + 1) % tones.length)}
+              aria-label="Next tone"
+              disabled={!hasData || tones.length <= 1}
+            >
               <ChevronRight className="w-4 h-4" />
             </Button>
           </div>
         </div>
       </CardHeader>
-      <CardContent className="space-y-4">
-        {active?.subjects ? (
-          <div className="space-y-2">
-            <div className="text-sm font-semibold">Subject line variations</div>
-            <ul className="list-disc pl-5 space-y-1 text-sm">
-              {active.subjects.map((s, i) => (
-                <li key={i}>{s}</li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
 
-        <div className="space-y-2">
-          <div className="text-sm font-semibold">Message variations</div>
-          <Tabs defaultValue="0" className="w-full">
-            <TabsList className="grid grid-cols-3">
-              <TabsTrigger value="0">Variation 1</TabsTrigger>
-              <TabsTrigger value="1">Variation 2</TabsTrigger>
-              <TabsTrigger value="2">Variation 3</TabsTrigger>
-            </TabsList>
-            {active?.bodies.map((b, i) => (
-              <TabsContent key={i} value={String(i)}>
-                <div className="rounded-2xl border p-4 text-sm leading-relaxed bg-muted/40 whitespace-pre-wrap">{b}</div>
-              </TabsContent>
-            ))}
-          </Tabs>
-        </div>
+      <CardContent className="space-y-4">
+        {!hasData ? (
+          <div className="rounded-2xl border p-4 text-sm leading-relaxed bg-muted/40">
+            No results from the remote API for this persona. Try generating again.
+          </div>
+        ) : (
+          <>
+            {/* Subjects (email only, if provided) */}
+            {Array.isArray(active?.subjects) && active!.subjects.length > 0 ? (
+              <div className="space-y-2">
+                <div className="text-sm font-semibold">Subject line variations</div>
+                <ul className="list-disc pl-5 space-y-1 text-sm">
+                  {active!.subjects.map((s, i) => (
+                    <li key={i}>{s}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+
+            {/* Bodies */}
+            <div className="space-y-2">
+              <div className="text-sm font-semibold">Message variations</div>
+
+              {Array.isArray(active?.bodies) && active!.bodies.length > 0 ? (
+                <Tabs defaultValue="0" className="w-full">
+                  <TabsList className="grid grid-cols-3">
+                    {active!.bodies.map((_, i) => (
+                      <TabsTrigger key={i} value={String(i)}>
+                        {`Variation ${i + 1}`}
+                      </TabsTrigger>
+                    ))}
+                  </TabsList>
+                  {active!.bodies.map((b, i) => (
+                    <TabsContent key={i} value={String(i)}>
+                      <div className="rounded-2xl border p-4 text-sm leading-relaxed bg-muted/40 whitespace-pre-wrap">
+                        {b}
+                      </div>
+                    </TabsContent>
+                  ))}
+                </Tabs>
+              ) : (
+                <div className="rounded-2xl border p-4 text-sm leading-relaxed bg-muted/40">
+                  No message variations were returned for this tone.
+                </div>
+              )}
+            </div>
+          </>
+        )}
       </CardContent>
     </Card>
   );
 }
+
 
 export default function PersonaCreativeSimulator() {
   const [personas, setPersonas] = useState<Persona[]>([
@@ -347,127 +406,82 @@ export default function PersonaCreativeSimulator() {
 
   const canAddPersona = personas.length < MAX_PERSONAS;
 
+// put these helpers above the component or inside it before handleGenerate
+  async function fetchWithTimeout(input: RequestInfo, init: RequestInit & { timeoutMs?: number } = {}) {
+    const { timeoutMs = 15000, ...rest } = init;
+    const controller = new AbortController();
+    const t = window.setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const r = await fetch(input, { ...rest, signal: controller.signal });
+      return r;
+    } finally {
+      clearTimeout(t);
+    }
+  }
+
+  // normalize the API’s response into our GeneratedVariant[] shape
+  function toVariants(payload: any): GeneratedVariant[] | null {
+    if (Array.isArray(payload?.variants)) return payload.variants as GeneratedVariant[];
+    if (payload?.raw) {
+      // raw string fallback from server
+      return [{ tone: "formal/professional", bodies: [String(payload.raw)] }];
+    }
+    return null;
+  }
+
   const handleGenerate = async () => {
     setLoading(true);
     setApiError(null);
 
-    const controller = new AbortController();
-    const timeoutId = window.setTimeout(() => controller.abort(), 15_000);
+    // fan-out one request per persona; per-request timeout & one retry
+    const resultsMap: Record<number, GeneratedVariant[]> = {};
+    const failedIdxs: number[] = [];
 
-    // small helpers
-    const isNonEmptyStrArr = (a: any) => Array.isArray(a) && a.some((s) => typeof s === "string" && s.trim().length > 0);
-    const looksLikeVariant = (v: any) =>
-      v && typeof v === "object" && typeof v.tone === "string" && isNonEmptyStrArr(v.bodies);
+    for (let idx = 0; idx < personas.length; idx++) {
+      const persona = personas[idx];
+      const body = JSON.stringify({ persona, base });
 
-    try {
-      const r = await fetch("/api/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ personas, base }),
-        signal: controller.signal,
-      });
+      let final: GeneratedVariant[] | null = null;
 
-      if (!r.ok) throw new Error(`Server returned ${r.status}`);
-
-      // read as text first so we can handle both JSON and plain text
-      const text = await r.text();
-      let data: any = null;
-      try {
-        data = text ? JSON.parse(text) : null;
-      } catch {
-        // If the API returned plain text, show it for all personas as a single variant
-        data = { raw: text };
-      }
-
-      // Normalize into: Record<number, GeneratedVariant[]>
-      const normalized: Record<number, GeneratedVariant[]> = {};
-
-      // Case A: { byPersona: [{ idx, variants }] }
-      if (Array.isArray(data?.byPersona)) {
-        data.byPersona.forEach((p: any) => {
-          const arr = Array.isArray(p?.variants) ? p.variants.filter(looksLikeVariant) : [];
-          normalized[p?.idx] = arr;
-        });
-      }
-      // Case B: { variants: [...] } – apply to every persona
-      else if (Array.isArray(data?.variants)) {
-        const arr = data.variants.filter(looksLikeVariant);
-        personas.forEach((_, idx) => (normalized[idx] = arr));
-      }
-      // Case C: { raw: "..." } – use same body for all
-      else if (typeof data?.raw === "string" && data.raw.trim().length > 0) {
-        const DEFAULT_TONE: GeneratedVariant["tone"] = "formal/professional";
-        personas.forEach((_, idx) => {
-          normalized[idx] = [{ tone: DEFAULT_TONE, bodies: [String(data.raw).trim()] }];
-        });
-      }
-      // Case D: OpenAI shape – { choices: [ { message: { content } } ] }
-      else if (Array.isArray(data?.choices) && data.choices[0]?.message?.content) {
-        const content = String(data.choices[0].message.content);
+      for (let attempt = 0; attempt < 2 && !final; attempt++) {
         try {
-          // If content is JSON, parse and recurse into Case A/B
-          const inner = JSON.parse(content);
-          if (Array.isArray(inner?.byPersona)) {
-            inner.byPersona.forEach((p: any) => {
-              const arr = Array.isArray(p?.variants) ? p.variants.filter(looksLikeVariant) : [];
-              normalized[p?.idx] = arr;
-            });
-          } else if (Array.isArray(inner?.variants)) {
-            const arr = inner.variants.filter(looksLikeVariant);
-            personas.forEach((_, idx) => (normalized[idx] = arr));
-          } else {
-            // treat as raw text
-            const DEFAULT_TONE: GeneratedVariant["tone"] = "formal/professional";
-            personas.forEach((_, idx) => {
-              normalized[idx] = [{ tone: DEFAULT_TONE, bodies: [content] }];
-            });
-          }
-        } catch {
-          const DEFAULT_TONE: GeneratedVariant["tone"] = "formal/professional";
-          personas.forEach((_, idx) => {
-            normalized[idx] = [{ tone: DEFAULT_TONE, bodies: [content] }];
+          const r = await fetchWithTimeout("/api/generate-persona", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body,
+            timeoutMs: 18000, // per-call timeout (18s)
           });
+
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+
+          // API returns JSON; normalize
+          const data = await r.json();
+          final = toVariants(data);
+        } catch (_err) {
+          // brief jitter before the single retry
+          if (attempt === 0) await new Promise((res) => setTimeout(res, 250));
         }
+      }
+
+      if (final) {
+        resultsMap[idx] = final;
       } else {
-        throw new Error("Unexpected response shape from /api/generate");
+        failedIdxs.push(idx);
       }
-
-      // Validate & backfill per persona so the UI never renders blanks
-      let backfilled = false;
-      personas.forEach((p, idx) => {
-        const variants = normalized[idx];
-        const valid = Array.isArray(variants) && variants.length > 0 && variants.every(looksLikeVariant);
-
-        if (!valid) {
-          normalized[idx] = generateForPersona(p, base); // local deterministic fallback
-          backfilled = true;
-        } else {
-          // also strip empty bodies
-          normalized[idx] = variants.map((v) => ({
-            ...v,
-            bodies: v.bodies.filter((b) => typeof b === "string" && b.trim().length > 0),
-          })).filter((v) => v.bodies.length > 0) || generateForPersona(p, base);
-        }
-      });
-
-      setResults(normalized);
-      if (backfilled) {
-        setApiError("Remote API returned incomplete data for some personas; filled gaps with local variants.");
-      }
-    } catch (err: any) {
-      // Full fallback
-      const gen: Record<number, GeneratedVariant[]> = {};
-      personas.forEach((p, idx) => (gen[idx] = generateForPersona(p, base)));
-      setResults(gen);
-      setApiError(
-        err?.name === "AbortError"
-          ? "Request timed out; showing local variants."
-          : "Remote API failed; showing local variants instead."
-      );
-    } finally {
-      clearTimeout(timeoutId);
-      setLoading(false);
     }
+
+    // stitch results; only fill the failed personas with local variants
+    if (failedIdxs.length > 0) {
+      failedIdxs.forEach((i) => {
+        resultsMap[i] = generateForPersona(personas[i], base);
+      });
+      setApiError(
+        "Remote API returned incomplete data for some personas; filled only those gaps with local variants."
+      );
+    }
+
+    setResults(resultsMap);
+    setLoading(false);
   };
 
 
