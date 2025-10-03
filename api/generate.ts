@@ -1,41 +1,65 @@
-// api/generate.ts — Node runtime Vercel Function (non-streaming)
+// api/generate.ts — Vercel Node function, per-persona generation, fence-tolerant JSON parsing
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 
 export const runtime = "nodejs";
-export const maxDuration = 10; // keep under Hobby limits
+export const maxDuration = 10;
 
 // ---- env ----
 const FUELIX_API_BASE = process.env.FUELIX_API_BASE!;
 const FUELIX_API_KEY  = process.env.FUELIX_API_KEY!;
 const FUELIX_MODEL    = process.env.FUELIX_MODEL ?? "gpt-4o";
 
-// ---- minimal shared types (server-side only) ----
+// ---- minimal types (server) ----
 type Channel = "email" | "sms" | "inapp";
 interface Persona { name: string; description: string }
 interface BaseCreative { brief: string; channel: Channel; subject?: string; message: string }
+interface GeneratedVariant {
+  tone: "fun/energetic" | "humorous/cheeky" | "formal/professional";
+  subjects?: string[];
+  bodies: string[];
+}
+
+// Utility: accept markdown-fenced JSON or plain JSON
+function extractJSON(text: string): any {
+  if (!text) return null;
+  let s = text.trim();
+  // strip ```json ... ``` or ``` ... ```
+  if (s.startsWith("```")) {
+    // remove first fence line
+    const firstNl = s.indexOf("\n");
+    s = firstNl >= 0 ? s.slice(firstNl + 1) : s.replace(/^```+/, "");
+    // remove trailing ```
+    s = s.replace(/```+$/m, "").trim();
+  }
+  try { return JSON.parse(s); } catch { return null; }
+}
+
+function badRequest(res: VercelResponse, msg: string) {
+  return res.status(400).json({ error: msg });
+}
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== "POST") return res.status(405).json({ error: "Use POST" });
+  if (!FUELIX_API_BASE || !FUELIX_API_KEY) return res.status(500).json({ error: "Server misconfigured" });
 
-  if (!FUELIX_API_BASE || !FUELIX_API_KEY) {
-    return res.status(500).json({ error: "Server misconfigured" });
-  }
-
-  // --- parse body (Vercel parses JSON automatically when content-type is application/json) ---
   const body = typeof req.body === "string" ? safeParse(req.body) : req.body ?? {};
   const personas = (body as any)?.personas as Persona[] | undefined;
   const base = (body as any)?.base as BaseCreative | undefined;
+  if (!Array.isArray(personas) || !base) return badRequest(res, "Expected { personas: Persona[], base: BaseCreative }");
 
-  if (!Array.isArray(personas) || !base) {
-    return res.status(400).json({ error: "Bad request: expected { personas: Persona[], base: BaseCreative }" });
-  }
-
-  // --- server-side timeout (< maxDuration) ---
+  // 9s per request timeout (under Vercel hobby limit)
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 9_000);
+  const t = setTimeout(() => controller.abort(), 9_000);
 
   try {
-    const system = `You are a veteran marketing manager genius. You create personalized messaging copy that is nuanced to individual customer personas. Output ONLY JSON with this shape:
+    // Generate per persona (keeps outputs distinct)
+    const byPersona: { idx: number; variants: GeneratedVariant[] }[] = [];
+
+    for (let idx = 0; idx < personas.length; idx++) {
+      const persona = personas[idx];
+
+      const system = `You are a veteran marketing manager genius. You create personalized messaging copy that is nuanced to individual customer personas.
+Return ONLY JSON, no prose, no markdown fences. Shape:
 {
   "variants": [
     { "tone": "fun/energetic", "subjects": ["...","...","..."], "bodies": ["...","...","..."] },
@@ -43,70 +67,75 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     { "tone": "formal/professional", "subjects": ["...","...","..."], "bodies": ["...","...","..."] }
   ]
 }
-If channel != "email", omit "subjects". Keep each string concise.
-Ensure copy reflects EACH persona’s description.`.trim();
+If channel != "email", omit "subjects". Keep strings concise. Tailor tightly to this persona.`;
 
-    const user = `Personas: ${JSON.stringify(personas)}
+      const user = `Persona: ${JSON.stringify(persona)}
 Base: ${JSON.stringify(base)}`;
 
-    const r = await fetch(`${FUELIX_API_BASE}/v1/chat/completions`, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${FUELIX_API_KEY}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        model: FUELIX_MODEL,
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: user },
-        ],
-        temperature: 0.7,
-        stream: false,
-      }),
-      signal: controller.signal,
-    });
+      const r = await fetch(`${FUELIX_API_BASE}/v1/chat/completions`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${FUELIX_API_KEY}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: FUELIX_MODEL,
+          messages: [
+            { role: "system", content: system },
+            { role: "user", content: user },
+          ],
+          temperature: 0.7,
+          stream: false,
+        }),
+        signal: controller.signal,
+      });
 
-    clearTimeout(timeoutId);
-
-    if (!r.ok) {
-      const detail = await r.text().catch(() => "");
-      console.error("Fuel iX error", r.status, detail.slice(0, 500));
-      return res.status(502).json({ error: "Fuel iX call failed", status: r.status });
-    }
-
-    const ct = r.headers.get("content-type") || "";
-    if (!ct.startsWith("application/json")) {
-      const text = await r.text();
-      try {
-        return res.status(200).json(JSON.parse(text));
-      } catch {
-        return res.status(200).json({ raw: text });
+      if (!r.ok) {
+        const detail = await r.text().catch(() => "");
+        console.error("[generate] Fuel iX error", r.status, detail.slice(0, 500));
+        return res.status(502).json({ error: "Fuel iX call failed", status: r.status });
       }
+
+      const ct = r.headers.get("content-type") || "";
+      let variants: GeneratedVariant[] | null = null;
+
+      if (ct.startsWith("application/json")) {
+        // OpenAI-compatible response
+        const data = await r.json() as { choices?: { message?: { content?: string } }[] };
+        const content = data?.choices?.[0]?.message?.content ?? "";
+        const parsed = extractJSON(content);
+        variants = Array.isArray(parsed?.variants) ? parsed.variants : null;
+        if (!variants && parsed) {
+          // Some models nest slightly differently; last resort try to coerce
+          if (Array.isArray(parsed)) variants = parsed as any;
+        }
+        if (!variants && !parsed) {
+          // content was plain text; treat as raw
+          return res.status(200).json({ raw: content });
+        }
+      } else {
+        // Provider gave text; attempt to parse it
+        const text = await r.text();
+        const parsed = extractJSON(text);
+        variants = Array.isArray(parsed?.variants) ? parsed.variants : null;
+        if (!variants) return res.status(200).json({ raw: text });
+      }
+
+      byPersona.push({ idx, variants: variants! });
     }
 
-    const data = (await r.json()) as {
-      choices?: { message?: { content?: string } }[];
-    };
-    const content = data?.choices?.[0]?.message?.content ?? "";
-
-    try {
-      return res.status(200).json(JSON.parse(content));
-    } catch {
-      return res.status(200).json({ raw: content });
-    }
+    clearTimeout(t);
+    return res.status(200).json({ byPersona });
   } catch (err: any) {
-    clearTimeout(timeoutId);
+    clearTimeout(t);
     if (err?.name === "AbortError") {
-      console.warn("Fuel iX call timed out");
+      console.warn("[generate] upstream timeout");
       return res.status(504).json({ raw: "Timed out calling model — using local variants." });
     }
-    console.error(err);
-    return res.status(500).json({ error: "Fuel iX call error" });
+    console.error("[generate] error", err);
+    return res.status(500).json({ error: "server_error" });
   }
 }
 
-// tiny helper
-function safeParse(s: string) {
-  try { return JSON.parse(s); } catch { return {}; }
-}
+// helpers
+function safeParse(s: string) { try { return JSON.parse(s); } catch { return {}; } }
