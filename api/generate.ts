@@ -49,7 +49,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   // 9s per request timeout (under Vercel hobby limit)
   const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), 9_000);
+  const t = setTimeout(() => controller.abort(), 20_000);
 
   try {
     // Generate per persona (keeps outputs distinct)
