@@ -2,7 +2,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 
 export const runtime = "nodejs";
-export const maxDuration = 20;
+export const maxDuration = 30;
 
 // ---- env ----
 const FUELIX_API_BASE = process.env.FUELIX_API_BASE!;
