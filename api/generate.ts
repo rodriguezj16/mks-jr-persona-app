@@ -1,13 +1,13 @@
 // api/generate.ts
 export const runtime = "nodejs";
-export const maxDuration = 10;
+
+function json(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
 
 export default async function handler(req: Request): Promise<Response> {
-  if (req.method !== "POST") {
-    return Response.json({ error: "Use POST" }, { status: 405 });
-  }
-  const base  = !!process.env.FUELIX_API_BASE;
-  const key   = !!process.env.FUELIX_API_KEY;
-  const model = process.env.FUELIX_MODEL ?? "(none)";
-  return Response.json({ ok: true, env: { base, key, model } }, { status: 200 });
+  return json({ ok: true, stage: "stub", method: req.method });
 }
