@@ -429,12 +429,16 @@ export default function PersonaCreativeSimulator() {
     return null;
   }
 
+  // --- DROP-IN: fan-out per persona, no local back-fill ----------------------
   const handleGenerate = async () => {
     setLoading(true);
     setApiError(null);
     setResults({}); // clear previous
 
-    // small helper so we don't repeat options everywhere
+    // 25s per-persona client timeout
+    const PER_REQUEST_MS = 25_000;
+
+    // Small helper
     const postJson = (url: string, body: unknown, signal: AbortSignal) =>
       fetch(url, {
         method: "POST",
@@ -443,21 +447,19 @@ export default function PersonaCreativeSimulator() {
         signal,
       });
 
-    // 25s per-persona client timeout (Vercel Hobby hard caps execution ~10s, but keep a cushion)
-    const perRequestMs = 25_000;
-
-    // simple concurrency limiter (2 at a time keeps things smooth on Hobby)
+    // Concurrency limiter (2 at a time plays nicely with Hobby)
     const MAX_CONCURRENCY = 2;
     let inFlight = 0;
     const queue: Array<() => Promise<void>> = [];
 
-    const runNext = () => {
+    function runNext() {
       const job = queue.shift();
-      if (job) job();
-    };
+      if (job) void job();
+    }
 
-    const schedule = <T,>(fn: () => Promise<T>): Promise<T> =>
-      new Promise<T>((resolve, reject) => {
+    // ✅ Use a function declaration for generics (safe in TSX)
+    function schedule<T>(fn: () => Promise<T>): Promise<T> {
+      return new Promise<T>((resolve, reject) => {
         const start = async () => {
           inFlight++;
           try {
@@ -470,34 +472,36 @@ export default function PersonaCreativeSimulator() {
             runNext();
           }
         };
-        if (inFlight < MAX_CONCURRENCY) start();
-        else queue.push(start);
+        if (inFlight < MAX_CONCURRENCY) {
+          void start();
+        } else {
+          queue.push(start);
+        }
       });
+    }
 
-    // build per-persona requests
+    // Build per-persona jobs
     const jobs = personas.map((persona, idx) =>
       schedule(async () => {
         const ctl = new AbortController();
-        const t = window.setTimeout(() => ctl.abort(), perRequestMs);
+        const t = window.setTimeout(() => ctl.abort(), PER_REQUEST_MS);
         try {
           const r = await postJson("/api/generate-persona", { persona, base }, ctl.signal);
 
-          // Treat non-2xx as failure (no backfill)
           if (!r.ok) {
             const detail = await r.text().catch(() => "");
-            throw new Error(`p${idx} ${r.status} ${detail?.slice(0, 200)}`);
+            throw new Error(`p${idx} ${r.status} ${detail.slice(0, 200)}`);
           }
 
           const data = await r.json();
 
-          // Expect the tight persona payload shape:
-          // { idx?: number, variants: GeneratedVariant[] }
+          // Expect { variants: GeneratedVariant[] }
           const variants = Array.isArray(data?.variants) ? data.variants : null;
           if (!variants || variants.length === 0) {
             throw new Error(`p${idx} empty/invalid variants`);
           }
 
-          // success: store under that persona index
+          // success: stash results for this persona index
           setResults(prev => ({ ...prev, [idx]: variants }));
           return true;
         } finally {
@@ -506,9 +510,7 @@ export default function PersonaCreativeSimulator() {
       })
     );
 
-    // wait for all to settle
     const settled = await Promise.allSettled(jobs);
-
     const failures = settled.filter(s => s.status === "rejected").length;
     const successes = settled.length - failures;
 
@@ -522,31 +524,6 @@ export default function PersonaCreativeSimulator() {
 
     setLoading(false);
   };
-  What changes on screen
-  Panels that succeeded render as usual.
-
-  Panels that failed simply won’t have results (your PersonaPanel can already handle variants=[]; if you’d like a clearer empty state, add a small “No data” message when !variants?.length).
-
-  Optional: friendlier empty state in PersonaPanel
-  If you want an explicit message instead of an empty card, inside PersonaPanel before rendering subjects/bodies:
-
-  tsx
-  Copy code
-  if (!variants || variants.length === 0) {
-    return (
-      <Card className="h-full">
-        <CardHeader>
-          <CardTitle className="text-lg">{persona.name || "Untitled Persona"}</CardTitle>
-          <p className="text-xs text-muted-foreground mt-1 line-clamp-2">
-            {persona.description || "(no description)"}
-          </p>
-        </CardHeader>
-        <CardContent className="text-sm text-muted-foreground">
-          No remote data for this persona. Try again.
-        </CardContent>
-      </Card>
-    );
-  }
 
 
   const exportJson = () => {
